@@ -2,7 +2,7 @@
 // through here: only this site's own files do). The saved copy is shown at once and refreshed behind it.
 // (13 Oct 2026: Maxis' DNS refuses *.github.io, so the phone opens the copy on nightmew-dogcam.pages.dev. Each file
 // is saved by itself and none is required, so the page installs wherever it is hosted.)
-const CACHE = 'dogcam-3';
+const CACHE = 'dogcam-4';
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => Promise.all(['index.html', './'].map((u) => fetch(u).then((r) => (r.ok && !r.redirected ? c.put(u, r) : null)).catch(() => {})))).then(() => self.skipWaiting()));
 });
