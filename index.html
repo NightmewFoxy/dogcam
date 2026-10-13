@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Dog Cam">
+<meta name="theme-color" content="#000000">
+<meta name="robots" content="noindex,nofollow">
+<meta name="referrer" content="no-referrer">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="icon" href="icon.png">
+<title>Dog Cam</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #fff; font: 16px -apple-system, system-ui, sans-serif; overflow: hidden; -webkit-user-select: none; user-select: none; }
+  video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  #msg { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; text-align: center; background: rgba(0,0,0,.55); }
+  #msg.hide { display: none; }
+  #msg p { margin: 0; max-width: 22em; line-height: 1.4; }
+  #msg small { opacity: .7; }
+  .spin { width: 34px; height: 34px; border: 3px solid rgba(255,255,255,.25); border-top-color: #fff; border-radius: 50%; animation: s 1s linear infinite; }
+  .spin.off { display: none; }
+  @keyframes s { to { transform: rotate(360deg); } }
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; justify-content: center; gap: 14px; padding: 14px 16px calc(14px + env(safe-area-inset-bottom)); }
+  button { font: inherit; color: #fff; background: rgba(40,40,40,.75); border: 1px solid rgba(255,255,255,.25); border-radius: 999px; padding: 12px 20px; min-width: 56px; -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+  button:active { background: rgba(90,90,90,.8); }
+  #live { position: fixed; top: calc(10px + env(safe-area-inset-top)); left: 14px; font-size: 13px; font-weight: 600; padding: 4px 10px; border-radius: 999px; background: rgba(200,30,30,.9); display: none; }
+  #live.on { display: block; }
+  input { font: inherit; width: 100%; max-width: 22em; box-sizing: border-box; padding: 12px; border-radius: 10px; border: 1px solid #555; background: #111; color: #fff; }
+</style>
+</head>
+<body>
+<video id="v" playsinline webkit-playsinline muted autoplay></video>
+<div id="live">● LIVE</div>
+<div id="msg"><div class="spin" id="spin"></div><p id="text">Waking the camera…</p><div id="extra"></div></div>
+<div id="bar">
+  <button id="sound" aria-label="Sound">🔇 Sound off</button>
+  <button id="again" aria-label="Reload">↻</button>
+</div>
+<script>
+(() => {
+  const KEY = 'dogcam';
+  const v = document.getElementById('v');
+  const msg = document.getElementById('msg'), text = document.getElementById('text'), spin = document.getElementById('spin'), extra = document.getElementById('extra');
+  const live = document.getElementById('live'), sound = document.getElementById('sound'), again = document.getElementById('again');
+  const store = { get: () => { try { return JSON.parse(localStorage.getItem(KEY)) || null; } catch { return null; } }, set: (c) => { try { localStorage.setItem(KEY, JSON.stringify(c)); } catch {} } };
+  const parse = (s) => { const m = /([a-z0-9-]{10,80})\.([a-f0-9]{16,80})\s*$/i.exec(String(s || '')); return m ? { topic: m[1], token: m[2] } : null; };
+
+  // The link from the Mac carries the key after the # (it never leaves the phone); it is kept for next time.
+  let cfg = parse(location.hash.slice(1));
+  if (cfg) store.set({ ...(store.get() || {}), ...cfg }); else cfg = store.get();
+
+  const say = (t, busy, more) => { text.textContent = t; spin.className = busy ? 'spin' : 'spin off'; extra.innerHTML = more || ''; msg.className = ''; live.className = ''; };
+  const get = async (url, ms) => { const c = new AbortController(); const t = setTimeout(() => c.abort(), ms); try { return await fetch(url, { signal: c.signal, cache: 'no-store' }); } finally { clearTimeout(t); } };
+
+  async function lookUp() {
+    const r = await get(`https://ntfy.sh/${cfg.topic}/json?poll=1&since=12h`, 12000);
+    let base = null;
+    for (const line of (await r.text()).split('\n')) {
+      try { const o = JSON.parse(line); if (o.event === 'message' && /^dog: https:\/\//.test(o.message)) base = o.message.slice(5).trim(); } catch {}
+    }
+    return base;
+  }
+  async function answers(base) {
+    try { const r = await get(`${base}/${cfg.token}/status`, 8000); if (r.status === 404) return 'key'; return r.ok ? await r.json() : null; } catch { return null; }
+  }
+
+  let run = 0, watch = null, lastT = 0, lastMove = 0;
+  async function start() {
+    const me = ++run;
+    clearInterval(watch);
+    if (!cfg) return say('Paste the Dog Cam link from the Mac.', false, '<input id="link" placeholder="Paste the link here" autocapitalize="off" autocorrect="off">');
+    say('Waking the camera…', true);
+    let base = (store.get() || {}).base, st = base ? await answers(base) : null;
+    if (!st || st === 'key') {
+      try { const b = await lookUp(); if (b) { base = b; st = await answers(b); } } catch {}
+    }
+    if (me !== run) return;
+    if (st === 'key') return say('This link no longer matches the Mac. Ask for a new Dog Cam link.', false);
+    if (!st) return say('The Mac is not answering.', false, '<small>It may be off, asleep or without internet. Trying again…</small>'), void setTimeout(() => { if (me === run) start(); }, 8000);
+    store.set({ ...cfg, base });
+    sound.style.display = st.sound ? '' : 'none';
+    v.src = `${base}/${cfg.token}/live.m3u8?t=${Date.now()}`;
+    v.play().catch(() => {});
+    lastT = 0; lastMove = Date.now();
+    // (a picture that stops moving for 12 s is asked for again; a camera error is shown as the Mac says it)
+    watch = setInterval(async () => {
+      if (me !== run || document.hidden) return;
+      if (v.currentTime !== lastT) { lastT = v.currentTime; lastMove = Date.now(); if (v.currentTime > 0) { msg.className = 'hide'; live.className = 'on'; } return; }
+      if (Date.now() - lastMove < 12000) return;
+      const s = await answers(base);
+      if (me !== run) return;
+      if (s && s !== 'key' && s.error) { say('The Mac camera is not giving a picture.', false, `<small>${s.error.replace(/[<&]/g, '')}<br>Is the Mac's lid open? Trying again…</small>`); lastMove = Date.now(); v.src = `${base}/${cfg.token}/live.m3u8?t=${Date.now()}`; v.play().catch(() => {}); return; }
+      start();
+    }, 1500);
+  }
+  function stop() { run++; clearInterval(watch); v.pause(); v.removeAttribute('src'); v.load(); live.className = ''; }
+
+  sound.onclick = () => { v.muted = !v.muted; sound.textContent = v.muted ? '🔇 Sound off' : '🔊 Sound on'; if (!v.muted) v.play().catch(() => {}); };
+  again.onclick = () => start();
+  document.addEventListener('change', (e) => { if (e.target.id !== 'link') return; const c = parse(e.target.value.split('#').pop()); if (c) { cfg = c; store.set(c); start(); } else say('That is not a Dog Cam link.', false, '<input id="link" placeholder="Paste the link here" autocapitalize="off" autocorrect="off">'); });
+  // (leaving the page stops the stream, so the Mac's camera turns itself off)
+  document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); else start(); });
+  window.addEventListener('pageshow', (e) => { if (e.persisted) start(); });
+  start();
+})();
+</script>
+</body>
+</html>
