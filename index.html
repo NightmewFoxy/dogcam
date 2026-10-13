@@ -82,7 +82,17 @@
     if (!st) return say('The Mac is not answering.', false, '<small>It may be off, asleep or without internet. Trying again…</small>'), void setTimeout(() => { if (me === run) start(); }, 8000);
     store.set({ ...cfg, base });
     sound.style.display = st.sound ? '' : 'none';
-    v.src = `${base}/${cfg.token}/live.m3u8?t=${Date.now()}`;
+    // (the camera takes about 8 s to come on; the player is given the stream only once it is ready, or it never starts)
+    for (let i = 0; i < 40; i++) {
+      let w = null;
+      try { const r = await get(`${base}/${cfg.token}/wake`, 8000); w = r.ok ? await r.json() : null; } catch {}
+      if (me !== run) return;
+      if (w && w.ready) break;
+      if (w && w.error) say('The Mac camera is not giving a picture.', true, `<small>${w.error.replace(/[<&]/g, '')}<br>Is the Mac's lid open? Trying again…</small>`);
+      await new Promise((r) => setTimeout(r, 700));
+      if (me !== run) return;
+    }
+    v.src =`${base}/${cfg.token}/live.m3u8?t=${Date.now()}`;
     v.play().catch(() => {});
     lastT = 0; lastMove = Date.now();
     // (a picture that stops moving for 12 s is asked for again; a camera error is shown as the Mac says it)
