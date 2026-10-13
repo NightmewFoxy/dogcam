@@ -1,7 +1,7 @@
 // Keeps the page itself on the phone, so Dog Cam opens even when its host can't be reached (the stream never goes
 // through here: only this site's own files do). The saved copy is shown at once and refreshed behind it.
-// (13 Oct 2026: Maxis' DNS stopped answering for *.github.io, so the page is opened from raw.githack.com, where the
-// page is .../main/index.html and the folder itself is not a page: each file is saved by itself, none is required.)
+// (13 Oct 2026: Maxis' DNS refuses *.github.io, so the phone opens the copy on nightmew-dogcam.pages.dev. Each file
+// is saved by itself and none is required, so the page installs wherever it is hosted.)
 const CACHE = 'dogcam-2';
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => Promise.all(['index.html', './'].map((u) => fetch(u).then((r) => (r.ok && !r.redirected ? c.put(u, r) : null)).catch(() => {})))).then(() => self.skipWaiting()));
