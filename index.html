@@ -104,6 +104,7 @@
   // (leaving the page stops the stream, so the Mac's camera turns itself off)
   document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); else start(); });
   window.addEventListener('pageshow', (e) => { if (e.persisted) start(); });
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   start();
 })();
 </script>
