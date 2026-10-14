@@ -35,6 +35,7 @@
 </head>
 <body>
 <video id="v" playsinline webkit-playsinline muted autoplay></video>
+<audio id="a" playsinline></audio>
 <div id="live">● LIVE</div>
 <div id="msg"><div class="spin" id="spin"></div><p id="text">Waking the camera…</p><div id="extra"></div></div>
 <div id="bar">
@@ -72,7 +73,46 @@
     try { const r = await get(`${base}/${cfg.token}/status`, 8000); if (r.status === 404) return 'key'; return r.ok ? await r.json() : null; } catch { return null; }
   }
 
-  let run = 0, watch = null, lastT = 0, lastMove = 0;
+  let run = 0, watch = null, pc = null, ear = null, lastT = 0, lastMove = 0, hearing = false;
+  const aud = document.getElementById('a');
+  // Live like a video call (14 Oct 2026): WebRTC straight from the Mac. The picture comes by itself (measured: held
+  // ~40 ms on the phone), because a phone keeps picture and sound in step, and the Mac's sound arrives later: together,
+  // the picture was held back ~100-400 ms. Sound, when switched on, is a second call of its own (~120 ms).
+  // Only if WebRTC cannot connect, the Mac's low-latency HLS (1-2 s behind, picture and sound together) is played.
+  const ICE = [{ urls: 'stun:stun.cloudflare.com:3478' }, { urls: 'stun:stun.l.google.com:19302' }];
+  function hangUp() { if (pc) { try { pc.close(); } catch {} pc = null; } if (ear) { try { ear.close(); } catch {} ear = null; } }
+  // One WebRTC call to the Mac for one kind ('video' or 'audio'); returns the connection once the answer is in.
+  async function dial(base, kind, onTrack) {
+    const c = new RTCPeerConnection({ iceServers: ICE, bundlePolicy: 'max-bundle' });
+    c.addTransceiver(kind, { direction: 'recvonly' });
+    c.ontrack = (e) => { try { e.receiver.jitterBufferTarget = 0; } catch {} onTrack(e.track); };
+    await c.setLocalDescription(await c.createOffer());
+    // (the phone's own outside address must be in the offer, or the home router may drop the picture: wait for it)
+    await new Promise((r) => { if (c.iceGatheringState === 'complete') return r(); c.addEventListener('icegatheringstatechange', () => { if (c.iceGatheringState === 'complete') r(); }); setTimeout(r, 2500); });
+    const r = await fetch(`${base}/${cfg.token}/whep`, { method: 'POST', headers: { 'content-type': 'application/sdp' }, body: c.localDescription.sdp, cache: 'no-store' });
+    if (!r.ok) { c.close(); throw new Error(`whep ${r.status}`); }
+    await c.setRemoteDescription({ type: 'answer', sdp: await r.text() });
+    return c;
+  }
+  async function call(base, me) {
+    hangUp();
+    v.removeAttribute('src'); v.muted = true;
+    const c = await dial(base, 'video', (t) => { v.srcObject = new MediaStream([t]); v.play().catch(() => {}); });
+    if (me !== run) { c.close(); return false; }
+    pc = c;
+    if (hearing) listen(base, me);
+    for (let i = 0; i < 40 && me === run; i++) {
+      if (c.connectionState === 'connected' && v.readyState >= 2) return true;
+      if (c.connectionState === 'failed') return false;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return false;
+  }
+  async function frames() {
+    if (!pc) return v.currentTime;
+    let n = 0; try { (await pc.getStats()).forEach((s) => { if (s.type === 'inbound-rtp' && s.kind === 'video') n = s.framesDecoded || 0; }); } catch {}
+    return n;
+  }
   async function start() {
     const me = ++run;
     clearInterval(watch);
@@ -88,33 +128,51 @@
     store.set({ ...cfg, base });
     sound.style.display = st.sound ? '' : 'none';
     document.getElementById('lamp').classList.toggle('on', !!st.lamp); document.getElementById('night').classList.toggle('on', !!st.night);
-    // (the camera takes about 8 s to come on; the player is given the stream only once it is ready, or it never starts)
+    // (the camera takes a few seconds to come on; the page connects once its picture has reached the Mac's relay)
     for (let i = 0; i < 40; i++) {
       let w = null;
       try { const r = await get(`${base}/${cfg.token}/wake`, 8000); w = r.ok ? await r.json() : null; } catch {}
       if (me !== run) return;
       if (w && w.ready) break;
       if (w && w.error) say('The Mac camera is not giving a picture.', true, `<small>${w.error.replace(/[<&]/g, '')}<br>Is the Mac's lid open? Trying again…</small>`);
-      await new Promise((r) => setTimeout(r, 700));
+      await new Promise((r) => setTimeout(r, 500));
       if (me !== run) return;
     }
-    v.src =`${base}/${cfg.token}/live.m3u8?t=${Date.now()}`;
-    v.play().catch(() => {});
-    lastT = 0; lastMove = Date.now();
-    // (a picture that stops moving for 12 s is asked for again; a camera error is shown as the Mac says it)
+    let ok = false;
+    try { ok = await call(base, me); } catch {}
+    if (me !== run) return;
+    if (!ok) { hangUp(); v.srcObject = null; v.muted = !hearing; v.src = `${base}/${cfg.token}/hls/index.m3u8`; v.play().catch(() => {}); }
+    lastT = -1; lastMove = Date.now();
+    let tick = 0;
+    // (every 1.5 s: is the picture still moving? every 6 s: tell the Mac someone is still watching. A picture that
+    // stops for 6 s, or a call that drops, is connected again; a camera error is shown as the Mac says it)
     watch = setInterval(async () => {
       if (me !== run || document.hidden) return;
-      if (v.currentTime !== lastT) { lastT = v.currentTime; lastMove = Date.now(); if (v.currentTime > 0) { msg.className = 'hide'; live.className = 'on'; } return; }
-      if (Date.now() - lastMove < 12000) return;
+      if (++tick % 4 === 0) get(`${base}/${cfg.token}/wake`, 8000).catch(() => {});
+      const n = await frames();
+      if (me !== run) return;
+      if (n !== lastT) { lastT = n; lastMove = Date.now(); if (n > 0) { msg.className = 'hide'; live.className = 'on'; } return; }
+      if (Date.now() - lastMove < (pc && pc.connectionState !== 'failed' ? 6000 : 12000)) return;
       const s = await answers(base);
       if (me !== run) return;
-      if (s && s !== 'key' && s.error) { say('The Mac camera is not giving a picture.', false, `<small>${s.error.replace(/[<&]/g, '')}<br>Is the Mac's lid open? Trying again…</small>`); lastMove = Date.now(); v.src = `${base}/${cfg.token}/live.m3u8?t=${Date.now()}`; v.play().catch(() => {}); return; }
+      if (s && s !== 'key' && s.error) say('The Mac camera is not giving a picture.', true, `<small>${s.error.replace(/[<&]/g, '')}<br>Is the Mac's lid open? Trying again…</small>`);
       start();
     }, 1500);
   }
-  function stop() { run++; clearInterval(watch); v.pause(); v.removeAttribute('src'); v.load(); live.className = ''; }
+  function stop() { run++; clearInterval(watch); hangUp(); aud.pause(); aud.srcObject = null; v.pause(); v.srcObject = null; v.removeAttribute('src'); v.load(); live.className = ''; }
 
-  sound.onclick = () => { v.muted = !v.muted; sound.textContent = v.muted ? '🔇 Sound off' : '🔊 Sound on'; if (!v.muted) v.play().catch(() => {}); };
+  // Sound: its own call (WebRTC), or the HLS player's own sound in the fallback.
+  async function listen(base, me) {
+    if (ear) { try { ear.close(); } catch {} ear = null; }
+    try { const c = await dial(base, 'audio', (t) => { aud.srcObject = new MediaStream([t]); aud.play().catch(() => {}); }); if (me !== run || !hearing) c.close(); else ear = c; } catch {}
+  }
+  sound.onclick = () => {
+    hearing = !hearing; sound.textContent = hearing ? '🔊 Sound on' : '🔇 Sound off';
+    if (!pc) { v.muted = !hearing; if (hearing) v.play().catch(() => {}); return; }
+    v.muted = true;
+    // (the tap itself lets the sound play: iPhone allows sound only from a tap)
+    if (hearing) { aud.muted = false; aud.play().catch(() => {}); const c = store.get() || {}; if (c.base) listen(c.base, run); } else { aud.pause(); if (ear) { try { ear.close(); } catch {} ear = null; } aud.srcObject = null; }
+  };
   again.onclick = () => start();
   // (a dark room: the phone brightens the picture itself; kept for next time, like the fill-the-screen choice)
   const keep = (id, cls) => { const b = document.getElementById(id); const k = "dogcam-" + cls; const set = (on) => { v.classList.toggle(cls, on); b.classList.toggle("on", on); try { localStorage.setItem(k, on ? "1" : ""); } catch {} }; let was = false; try { was = !!localStorage.getItem(k); } catch {} set(was); b.onclick = () => set(!v.classList.contains(cls)); };
