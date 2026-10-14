@@ -91,7 +91,11 @@
     await new Promise((r) => { if (c.iceGatheringState === 'complete') return r(); c.addEventListener('icegatheringstatechange', () => { if (c.iceGatheringState === 'complete') r(); }); setTimeout(r, 2500); });
     const r = await fetch(`${base}/${cfg.token}/whep`, { method: 'POST', headers: { 'content-type': 'application/sdp' }, body: c.localDescription.sdp, cache: 'no-store' });
     if (!r.ok) { c.close(); throw new Error(`whep ${r.status}`); }
-    await c.setRemoteDescription({ type: 'answer', sdp: await r.text() });
+    // (the Mac names picture and sound as one stream, and a phone keeps one stream in step even across two calls:
+    // the sound gets a name of its own, so the picture is never held back for it)
+    let sdp = await r.text();
+    if (kind === 'audio') sdp = sdp.replace(/^(a=(?:ssrc:\d+ )?msid:)\S+/gm, '$1dogsound').replace(/^(a=ssrc:\d+ mslabel:)\S+/gm, '$1dogsound');
+    await c.setRemoteDescription({ type: 'answer', sdp });
     return c;
   }
   async function call(base, me) {
