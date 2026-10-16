@@ -25,6 +25,8 @@
   .spin { width: 34px; height: 34px; border: 3px solid rgba(255,255,255,.25); border-top-color: #fff; border-radius: 50%; animation: s 1s linear infinite; }
   .spin.off { display: none; }
   @keyframes s { to { transform: rotate(360deg); } }
+  button.tap { background: rgba(255,190,70,.85); color: #000; animation: p 1.2s ease-in-out infinite; }
+  @keyframes p { 50% { opacity: .55; } }
   #bar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; padding: 14px 10px calc(14px + env(safe-area-inset-bottom)); }
   button { font: inherit; color: #fff; background: rgba(40,40,40,.75); border: 1px solid rgba(255,255,255,.25); border-radius: 999px; padding: 12px 15px; min-width: 50px; -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
   button:active { background: rgba(90,90,90,.8); }
@@ -73,8 +75,16 @@
     try { const r = await get(`${base}/${cfg.token}/status`, 8000); if (r.status === 404) return 'key'; return r.ok ? await r.json() : null; } catch { return null; }
   }
 
-  let run = 0, watch = null, pc = null, ear = null, lastT = 0, lastMove = 0, hearing = false;
+  let run = 0, watch = null, pc = null, ear = null, lastT = 0, lastMove = 0, hearing = true;
   const aud = document.getElementById('a');
+  // Sound is on unless he switched it off (16 Oct 2026, owner: "allow me to hear sounds from the mic from the Mac too";
+  // kept for next time). An iPhone plays sound only after a tap on the page: until then the button blinks
+  // "Tap for sound", and a tap anywhere starts it.
+  try { hearing = localStorage.getItem('dogcam-sound') !== '0'; } catch {}
+  const showSound = (blocked) => { sound.textContent = !hearing ? '🔇 Sound off' : blocked ? '🔊 Tap for sound' : '🔊 Sound on'; sound.classList.toggle('tap', hearing && !!blocked); };
+  const playAud = () => { if (!hearing || !aud.srcObject) return; aud.muted = false; aud.play().then(() => showSound(false), () => showSound(true)); };
+  const playV = () => v.play().then(() => showSound(false), () => { v.muted = true; v.play().catch(() => {}); showSound(true); });
+  showSound(false);
   // Live like a video call (14 Oct 2026): WebRTC straight from the Mac. The picture comes by itself (measured: held
   // ~40 ms on the phone), because a phone keeps picture and sound in step, and the Mac's sound arrives later: together,
   // the picture was held back ~100-400 ms. Sound, when switched on, is a second call of its own (~120 ms).
@@ -145,7 +155,7 @@
     let ok = false;
     try { ok = await call(base, me); } catch {}
     if (me !== run) return;
-    if (!ok) { hangUp(); v.srcObject = null; v.muted = !hearing; v.src = `${base}/${cfg.token}/hls/index.m3u8`; v.play().catch(() => {}); }
+    if (!ok) { hangUp(); v.srcObject = null; v.muted = !hearing; v.src = `${base}/${cfg.token}/hls/index.m3u8`; playV(); }
     lastT = -1; lastMove = Date.now();
     let tick = 0;
     // (every 1.5 s: is the picture still moving? every 6 s: tell the Mac someone is still watching. A picture that
@@ -168,15 +178,27 @@
   // Sound: its own call (WebRTC), or the HLS player's own sound in the fallback.
   async function listen(base, me) {
     if (ear) { try { ear.close(); } catch {} ear = null; }
-    try { const c = await dial(base, 'audio', (t) => { aud.srcObject = new MediaStream([t]); aud.play().catch(() => {}); }); if (me !== run || !hearing) c.close(); else ear = c; } catch {}
+    try { const c = await dial(base, 'audio', (t) => { aud.srcObject = new MediaStream([t]); playAud(); }); if (me !== run || !hearing) c.close(); else ear = c; } catch {}
   }
-  sound.onclick = () => {
-    hearing = !hearing; sound.textContent = hearing ? '🔊 Sound on' : '🔇 Sound off';
-    if (!pc) { v.muted = !hearing; if (hearing) v.play().catch(() => {}); return; }
+  sound.onclick = (e) => {
+    e.stopPropagation();
+    // (a blinking "Tap for sound" tap only starts the sound; it doesn't switch it off)
+    if (hearing && sound.classList.contains('tap')) return unlock();
+    hearing = !hearing; showSound(false);
+    try { localStorage.setItem('dogcam-sound', hearing ? '1' : '0'); } catch {}
+    if (!pc) { v.muted = !hearing; if (hearing) playV(); return; }
     v.muted = true;
     // (the tap itself lets the sound play: iPhone allows sound only from a tap)
     if (hearing) { aud.muted = false; aud.play().catch(() => {}); const c = store.get() || {}; if (c.base) listen(c.base, run); } else { aud.pause(); if (ear) { try { ear.close(); } catch {} ear = null; } aud.srcObject = null; }
   };
+  // Any tap on the page starts sound the iPhone held back.
+  function unlock() {
+    if (!hearing) return;
+    if (pc) { if (aud.srcObject) playAud(); else { aud.muted = false; aud.play().catch(() => {}); } }
+    else if (v.muted && v.src) { v.muted = false; playV(); }
+  }
+  document.addEventListener('touchend', unlock, { passive: true });
+  document.addEventListener('click', unlock);
   again.onclick = () => start();
   // (a dark room: the phone brightens the picture itself; kept for next time, like the fill-the-screen choice)
   const keep = (id, cls) => { const b = document.getElementById(id); const k = "dogcam-" + cls; const set = (on) => { v.classList.toggle(cls, on); b.classList.toggle("on", on); try { localStorage.setItem(k, on ? "1" : ""); } catch {} }; let was = false; try { was = !!localStorage.getItem(k); } catch {} set(was); b.onclick = () => set(!v.classList.contains(cls)); };
